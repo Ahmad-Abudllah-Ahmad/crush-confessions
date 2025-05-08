@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { z } from 'zod'
 import { prisma } from '../../../../../lib/prisma'
+import { getAuthOptions } from "../../../../../lib/auth-config";
 
 // Schema for message validation
 const messageSchema = z.object({
@@ -14,7 +15,7 @@ export async function GET(
   { params }: { params: { conversationId: string } }
 ) {
   try {
-    const session = await getServerSession()
+    const session = await getServerSession(getAuthOptions());
     const conversationId = params.conversationId
     
     // Unauthorized if not logged in
@@ -119,62 +120,62 @@ export async function POST(
   { params }: { params: { conversationId: string } }
 ) {
   try {
-    const session = await getServerSession()
-    const conversationId = params.conversationId
-    
+    const session = await getServerSession(getAuthOptions());
+    const conversationId = params.conversationId;
+
     // Unauthorized if not logged in
     if (!session?.user) {
-      return NextResponse.json(
-        { message: 'Unauthorized' },
-        { status: 401 }
-      )
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
-    
+
     // Get current user
     const currentUser = await prisma.user.findUnique({
       where: { email: session.user.email as string },
-    })
-    
+    });
+
     if (!currentUser) {
-      return NextResponse.json(
-        { message: 'User not found' },
-        { status: 404 }
-      )
+      return NextResponse.json({ message: "User not found" }, { status: 404 });
     }
-    
+
     // Check if the conversation exists
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId },
-    })
-    
+    });
+
     if (!conversation) {
       return NextResponse.json(
-        { message: 'Conversation not found' },
+        { message: "Conversation not found" },
         { status: 404 }
-      )
+      );
     }
-    
+
     // Verify that the current user is a participant in the conversation
-    if (conversation.user1Id !== currentUser.id && conversation.user2Id !== currentUser.id) {
+    if (
+      conversation.user1Id !== currentUser.id &&
+      conversation.user2Id !== currentUser.id
+    ) {
       return NextResponse.json(
-        { message: 'You are not authorized to send messages in this conversation' },
+        {
+          message:
+            "You are not authorized to send messages in this conversation",
+        },
         { status: 403 }
-      )
+      );
     }
-    
+
     // Parse and validate the request body
-    const body = await request.json()
-    const result = messageSchema.safeParse(body)
-    
+    const body = await request.json();
+    const result = messageSchema.safeParse(body);
+
     if (!result.success) {
       return NextResponse.json(
-        { message: 'Invalid input', errors: result.error.format() },
+        { message: "Invalid input", errors: result.error.format() },
         { status: 400 }
-      )
+      );
     }
-    
-    const { content } = result.data
-    
+
+    const { content } = result.data;
+
     // Create the new message
     const message = await prisma.message.create({
       data: {
@@ -193,8 +194,8 @@ export async function POST(
           },
         },
       },
-    })
-    
+    });
+
     // Format the message for the response
     const formattedMessage = {
       id: message.id,
@@ -202,25 +203,26 @@ export async function POST(
       timestamp: message.timestamp.toISOString(),
       sender: {
         id: message.sender.id,
-        displayName: message.sender.displayName || message.sender.email.split('@')[0],
+        displayName:
+          message.sender.displayName || message.sender.email.split("@")[0],
         profilePicture: message.sender.profilePicture,
       },
       isCurrentUser: true,
       readStatus: message.readStatus,
-    }
-    
+    };
+
     return NextResponse.json(
-      { 
-        message: 'Message sent successfully',
-        sentMessage: formattedMessage 
+      {
+        message: "Message sent successfully",
+        sentMessage: formattedMessage,
       },
       { status: 201 }
-    )
+    );
   } catch (error) {
-    console.error('Error sending message:', error)
+    console.error("Error sending message:", error);
     return NextResponse.json(
-      { message: 'Something went wrong' },
+      { message: "Something went wrong" },
       { status: 500 }
-    )
+    );
   }
-} 
+}

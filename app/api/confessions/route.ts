@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { z } from 'zod'
 import { prisma } from '../../../lib/prisma'
+import { getAuthOptions } from "../../../lib/auth-config";
 
 // Schema for validation when creating a confession
 const confessionSchema = z.object({
@@ -20,7 +21,7 @@ const confessionSchema = z.object({
 // GET: Fetch confessions with proper session isolation
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession()
+    const session = await getServerSession(getAuthOptions());
     
     // Unauthorized if not logged in
     if (!session?.user) {
@@ -149,64 +150,58 @@ export async function GET(request: NextRequest) {
 // POST: Create a new confession
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession()
-    
+    const session = await getServerSession(getAuthOptions());
+
     // Unauthorized if not logged in
     if (!session?.user) {
-      return NextResponse.json(
-        { message: 'Unauthorized' },
-        { status: 401 }
-      )
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
-    
+
     // Get current user
     const currentUser = await prisma.user.findUnique({
       where: { email: session.user.email as string },
-    })
-    
+    });
+
     if (!currentUser) {
-      return NextResponse.json(
-        { message: 'User not found' },
-        { status: 404 }
-      )
+      return NextResponse.json({ message: "User not found" }, { status: 404 });
     }
-    
+
     // Parse and validate request body
-    const body = await request.json()
-    const result = confessionSchema.safeParse(body)
-    
+    const body = await request.json();
+    const result = confessionSchema.safeParse(body);
+
     if (!result.success) {
       return NextResponse.json(
-        { message: 'Invalid input', errors: result.error.format() },
+        { message: "Invalid input", errors: result.error.format() },
         { status: 400 }
-      )
+      );
     }
-    
-    const { content, targetUserEmail, visibility } = result.data
-    
+
+    const { content, targetUserEmail, visibility } = result.data;
+
     // Find target user if email provided
-    let targetUser = null
+    let targetUser = null;
     if (targetUserEmail) {
       targetUser = await prisma.user.findUnique({
         where: { email: targetUserEmail },
-      })
-      
-      if (!targetUser && visibility === 'PRIVATE') {
+      });
+
+      if (!targetUser && visibility === "PRIVATE") {
         return NextResponse.json(
-          { message: 'Target user not found. They need to register first.' },
+          { message: "Target user not found. They need to register first." },
           { status: 404 }
-        )
+        );
       }
     }
-    
+
     // Ensure private confessions have a target
-    if (visibility === 'PRIVATE' && !targetUser) {
+    if (visibility === "PRIVATE" && !targetUser) {
       return NextResponse.json(
-        { message: 'Private confessions must have a target user' },
+        { message: "Private confessions must have a target user" },
         { status: 400 }
-      )
+      );
     }
-    
+
     // Create the confession
     const confession = await prisma.confession.create({
       data: {
@@ -217,11 +212,11 @@ export async function POST(request: NextRequest) {
         senderRevealed: false,
         receiverRevealed: false,
       },
-    })
-    
+    });
+
     return NextResponse.json(
-      { 
-        message: 'Confession created successfully',
+      {
+        message: "Confession created successfully",
         confession: {
           id: confession.id,
           content: confession.content,
@@ -230,15 +225,15 @@ export async function POST(request: NextRequest) {
           visibility: confession.visibility,
           senderRevealed: confession.senderRevealed,
           receiverRevealed: confession.receiverRevealed,
-        }
+        },
       },
       { status: 201 }
-    )
+    );
   } catch (error) {
-    console.error('Error creating confession:', error)
+    console.error("Error creating confession:", error);
     return NextResponse.json(
-      { message: 'Something went wrong' },
+      { message: "Something went wrong" },
       { status: 500 }
-    )
+    );
   }
-} 
+}

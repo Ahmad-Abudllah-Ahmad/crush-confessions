@@ -5,7 +5,14 @@ import { AuthOptions } from 'next-auth';
 export const getAuthUrl = (): string => {
   // For deployment environments
   if (process.env.NEXTAUTH_URL) {
-    return process.env.NEXTAUTH_URL;
+    // Strip any path segments and ensure we use just the base URL
+    try {
+      const url = new URL(process.env.NEXTAUTH_URL);
+      return `${url.protocol}//${url.host}`;
+    } catch (e) {
+      console.error("Invalid NEXTAUTH_URL format:", e);
+      return process.env.NEXTAUTH_URL;
+    }
   }
   
   // Fallback for development
