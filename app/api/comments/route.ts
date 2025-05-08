@@ -95,7 +95,6 @@ export async function POST(request: NextRequest) {
         userId: currentUser.id,
         parentCommentId,
         createdAt: new Date(),
-        updatedAt: new Date(),
         revealRequested: false,
         revealApproved: false,
       },
