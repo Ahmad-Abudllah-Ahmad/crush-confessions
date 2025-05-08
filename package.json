@@ -49,6 +49,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/pg": "^8.15.1",
     "eslint": "^8.55.0",
     "eslint-config-next": "14.0.4",
     "prisma": "^5.7.0"
