@@ -1,0 +1,176 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id               String         @id @default(uuid())
+  email            String         @unique
+  password         String
+  displayName      String?
+  profilePicture   String?
+  registrationDate DateTime       @default(now())
+  accountStatus    String         @default("PENDING") // Values: "PENDING", "ACTIVE", "SUSPENDED", "DELETED"
+  
+  // Relations
+  sentConfessions       Confession[]  @relation("SentConfessions")
+  receivedConfessions   Confession[]  @relation("ReceivedConfessions")
+  conversationsInitiated Conversation[] @relation("User1")
+  conversationsReceived  Conversation[] @relation("User2")
+  sentMessages        Message[]     @relation("SentMessages")
+  playlists           Playlist[]
+  followedBy         Follow[]       @relation("Following")
+  following          Follow[]       @relation("FollowedBy")
+  likes              Like[]
+  comments           Comment[]
+  commentLikes       CommentLike[]
+
+  @@map("users")
+}
+
+model Confession {
+  id               String       @id @default(uuid())
+  senderId         String
+  targetUserId     String?
+  content          String
+  timestamp        DateTime     @default(now())
+  status           String       @default("ACTIVE") // Values: "ACTIVE", "REVEALED", "CONNECTED", "DELETED"
+  visibility       String       @default("PUBLIC") // Values: "PUBLIC", "PRIVATE"
+  imageUrl         String?
+  senderRevealed   Boolean      @default(false)
+  receiverRevealed Boolean      @default(false)
+  chatChannelId    String?      @unique
+  
+  // Relations
+  sender       User         @relation("SentConfessions", fields: [senderId], references: [id])
+  targetUser   User?        @relation("ReceivedConfessions", fields: [targetUserId], references: [id])
+  likes        Like[]
+  comments     Comment[]
+
+  @@map("confessions")
+}
+
+model Conversation {
+  id            String      @id @default(uuid())
+  user1Id       String
+  user2Id       String
+  startTimestamp DateTime   @default(now())
+  status        String      @default("ACTIVE") // Values: "ACTIVE", "ARCHIVED"
+  
+  // Relations
+  user1         User        @relation("User1", fields: [user1Id], references: [id])
+  user2         User        @relation("User2", fields: [user2Id], references: [id])
+  messages      Message[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id             String     @id @default(uuid())
+  conversationId String
+  senderId       String
+  content        String
+  timestamp      DateTime   @default(now())
+  readStatus     Boolean    @default(false)
+  
+  // Relations
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  sender         User       @relation("SentMessages", fields: [senderId], references: [id])
+
+  @@map("messages")
+}
+
+model Playlist {
+  id                String     @id @default(uuid())
+  userId            String
+  playlistName      String
+  playlistDescription String?
+  playlistUrl       String
+  visibility        String     @default("PUBLIC") // Values: "PUBLIC", "PRIVATE", "CRUSH_ONLY"
+  
+  // Relations
+  user              User       @relation(fields: [userId], references: [id])
+
+  @@map("playlists")
+}
+
+model Follow {
+  id          String    @id @default(uuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime  @default(now())
+  
+  // Relations
+  follower    User      @relation("Following", fields: [followerId], references: [id])
+  following   User      @relation("FollowedBy", fields: [followingId], references: [id])
+
+  @@unique([followerId, followingId])
+  @@map("follows")
+}
+
+model Like {
+  id           String    @id @default(uuid())
+  userId       String
+  confessionId String
+  createdAt    DateTime  @default(now())
+  
+  // Relations
+  user         User      @relation(fields: [userId], references: [id])
+  confession   Confession @relation(fields: [confessionId], references: [id])
+
+  @@unique([userId, confessionId])
+  @@map("likes")
+}
+
+model Comment {
+  id               String    @id @default(uuid())
+  userId           String
+  confessionId     String
+  content          String
+  parentCommentId  String?
+  createdAt        DateTime  @default(now())
+  likes            Int       @default(0)
+  revealRequested  Boolean   @default(false)
+  revealApproved   Boolean   @default(false)
+  
+  // Relations
+  confession       Confession @relation(fields: [confessionId], references: [id])
+  user             User       @relation(fields: [userId], references: [id])
+  parentComment    Comment?   @relation("CommentReplies", fields: [parentCommentId], references: [id])
+  replies          Comment[]  @relation("CommentReplies")
+  commentLikes     CommentLike[]
+
+  @@map("comments")
+}
+
+model CommentLike {
+  id           String    @id @default(uuid())
+  userId       String
+  commentId    String
+  createdAt    DateTime  @default(now())
+  
+  // Relations
+  user         User      @relation(fields: [userId], references: [id])
+  comment      Comment   @relation(fields: [commentId], references: [id])
+
+  @@unique([userId, commentId], name: "userId_commentId")
+  @@map("comment_likes")
+}
+
+model UserBlock {
+  id         String   @id @default(uuid())
+  blockerId  String
+  blockedId  String
+  createdAt  DateTime @default(now())
+  
+  @@unique([blockerId, blockedId])
+  @@map("user_blocks")
+} 
