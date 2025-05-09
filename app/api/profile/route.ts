@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { z } from 'zod'
 import { PrismaClient } from '@prisma/client'
+import { getAuthOptions } from "../../../lib/auth-config";
 
 const prisma = new PrismaClient()
 
@@ -17,7 +18,7 @@ const profileUpdateSchema = z.object({
 // GET: Fetch user profile
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession()
+    const session = await getServerSession(getAuthOptions());
     
     // Unauthorized if not logged in
     if (!session?.user) {
@@ -119,49 +120,43 @@ export async function GET(request: NextRequest) {
 // PUT: Update user profile
 export async function PUT(request: NextRequest) {
   try {
-    const session = await getServerSession()
-    
+    const session = await getServerSession(getAuthOptions());
+
     // Unauthorized if not logged in
     if (!session?.user) {
-      return NextResponse.json(
-        { message: 'Unauthorized' },
-        { status: 401 }
-      )
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
-    
+
     // Get current user
     const user = await prisma.user.findUnique({
       where: { email: session.user.email as string },
-    })
-    
+    });
+
     if (!user) {
-      return NextResponse.json(
-        { message: 'User not found' },
-        { status: 404 }
-      )
+      return NextResponse.json({ message: "User not found" }, { status: 404 });
     }
-    
+
     // Parse and validate request body
-    const body = await request.json()
-    const result = profileUpdateSchema.safeParse(body)
-    
+    const body = await request.json();
+    const result = profileUpdateSchema.safeParse(body);
+
     if (!result.success) {
       return NextResponse.json(
-        { message: 'Invalid input', errors: result.error.format() },
+        { message: "Invalid input", errors: result.error.format() },
         { status: 400 }
-      )
+      );
     }
-    
+
     // Update user profile
     const updatedUser = await prisma.user.update({
       where: { id: user.id },
       data: {
         displayName: result.data.displayName,
       },
-    })
-    
+    });
+
     return NextResponse.json({
-      message: 'Profile updated successfully',
+      message: "Profile updated successfully",
       profile: {
         id: updatedUser.id,
         email: updatedUser.email,
@@ -169,12 +164,12 @@ export async function PUT(request: NextRequest) {
         profilePicture: updatedUser.profilePicture,
         registrationDate: updatedUser.registrationDate.toISOString(),
       },
-    })
+    });
   } catch (error) {
-    console.error('Error updating profile:', error)
+    console.error("Error updating profile:", error);
     return NextResponse.json(
-      { message: 'Something went wrong' },
+      { message: "Something went wrong" },
       { status: 500 }
-    )
+    );
   }
-} 
+}

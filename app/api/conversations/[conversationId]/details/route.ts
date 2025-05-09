@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { prisma } from '../../../../../lib/prisma'
+import { getAuthOptions } from "../../../../../lib/auth-config";
 
 // GET: Get conversation details
 export async function GET(
@@ -8,29 +9,23 @@ export async function GET(
   { params }: { params: { conversationId: string } }
 ) {
   try {
-    const session = await getServerSession()
-    const conversationId = params.conversationId
-    
+    const session = await getServerSession(getAuthOptions());
+    const conversationId = params.conversationId;
+
     // Unauthorized if not logged in
     if (!session?.user) {
-      return NextResponse.json(
-        { message: 'Unauthorized' },
-        { status: 401 }
-      )
+      return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
     }
-    
+
     // Get current user
     const currentUser = await prisma.user.findUnique({
       where: { email: session.user.email as string },
-    })
-    
+    });
+
     if (!currentUser) {
-      return NextResponse.json(
-        { message: 'User not found' },
-        { status: 404 }
-      )
+      return NextResponse.json({ message: "User not found" }, { status: 404 });
     }
-    
+
     // Get the conversation with both users
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId },
@@ -53,43 +48,49 @@ export async function GET(
         },
       },
     });
-    
+
     if (!conversation) {
       return NextResponse.json(
-        { message: 'Conversation not found' },
+        { message: "Conversation not found" },
         { status: 404 }
-      )
+      );
     }
-    
+
     // Check if the current user is a participant in the conversation
-    if (conversation.user1Id !== currentUser.id && conversation.user2Id !== currentUser.id) {
+    if (
+      conversation.user1Id !== currentUser.id &&
+      conversation.user2Id !== currentUser.id
+    ) {
       return NextResponse.json(
-        { message: 'You are not authorized to view this conversation' },
+        { message: "You are not authorized to view this conversation" },
         { status: 403 }
-      )
+      );
     }
-    
+
     // Determine the other user in the conversation
-    const otherUser = conversation.user1Id === currentUser.id 
-      ? conversation.user2 
-      : conversation.user1
-    
+    const otherUser =
+      conversation.user1Id === currentUser.id
+        ? conversation.user2
+        : conversation.user1;
+
     // Check if the current user has blocked the other user
-    const isBlocked = await prisma.userBlock.findFirst({
-      where: {
-        blockerId: currentUser.id,
-        blockedId: otherUser.id,
-      }
-    }) !== null
-    
+    const isBlocked =
+      (await prisma.userBlock.findFirst({
+        where: {
+          blockerId: currentUser.id,
+          blockedId: otherUser.id,
+        },
+      })) !== null;
+
     // Check if the current user is blocked by the other user
-    const isBlockedBy = await prisma.userBlock.findFirst({
-      where: {
-        blockerId: otherUser.id,
-        blockedId: currentUser.id,
-      }
-    }) !== null
-    
+    const isBlockedBy =
+      (await prisma.userBlock.findFirst({
+        where: {
+          blockerId: otherUser.id,
+          blockedId: currentUser.id,
+        },
+      })) !== null;
+
     // Format the response
     return NextResponse.json({
       conversation: {
@@ -115,10 +116,10 @@ export async function GET(
       canMessage: !isBlocked && !isBlockedBy,
     });
   } catch (error) {
-    console.error('Error fetching conversation details:', error)
+    console.error("Error fetching conversation details:", error);
     return NextResponse.json(
-      { message: 'Something went wrong' },
+      { message: "Something went wrong" },
       { status: 500 }
-    )
+    );
   }
-} 
+}
