@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from './ui/Button';
 
 interface User {
@@ -47,35 +47,61 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  
+  // Cache control
+  const dataFetchedRef = useRef(false);
+  const lastFetchTime = useRef(0);
+  const CACHE_DURATION = 60000; // 1 minute cache
+  
+  // Flag to track if component is mounted
+  const isMountedRef = useRef(true);
 
-  // Fetch comments when the component mounts
-  useEffect(() => {
-    fetchComments();
-  }, [confessionId]);
-
-  // Function to fetch comments
-  const fetchComments = async () => {
+  // Function to fetch comments with caching
+  const fetchComments = useCallback(async (force = false) => {
+    // Don't fetch if we already have data and it's not stale, unless forced
+    const now = Date.now();
+    if (!force && comments.length > 0 && now - lastFetchTime.current < CACHE_DURATION) {
+      return;
+    }
+    
     try {
       const response = await fetch(`/api/comments?confessionId=${confessionId}`);
       if (!response.ok) {
         throw new Error('Failed to fetch comments');
       }
-      const data = await response.json();
-      setComments(data.comments || []);
       
-      // Get current user ID and store it
-      if (data.currentUserId) {
-        setCurrentUserId(data.currentUserId);
-        // Store in window for access in the component
-        if (typeof window !== 'undefined') {
-          (window as any).userId = data.currentUserId;
+      const data = await response.json();
+      
+      // Only update if component is still mounted
+      if (isMountedRef.current) {
+        setComments(data.comments || []);
+        lastFetchTime.current = now;
+        
+        // Get current user ID and store it
+        if (data.currentUserId) {
+          setCurrentUserId(data.currentUserId);
         }
       }
     } catch (error) {
       console.error('Error fetching comments:', error);
-      setError('Failed to load comments');
+      if (isMountedRef.current) {
+        setError('Failed to load comments');
+      }
     }
-  };
+  }, [confessionId, comments.length]);
+
+  // Fetch comments when the component mounts
+  useEffect(() => {
+    if (!dataFetchedRef.current) {
+      fetchComments();
+      dataFetchedRef.current = true;
+    }
+    
+    // Set up cleanup when component unmounts
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, [fetchComments]);
 
   // Function to post a new comment
   const handleSubmitComment = async (e: React.FormEvent) => {
@@ -84,6 +110,32 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
 
     setIsLoading(true);
     setError(null);
+    
+    // Save the comment content before clearing the input
+    const commentContent = newComment;
+    // Clear input immediately for better UX
+    setNewComment('');
+    
+    // Create temporary optimistic comment
+    const optimisticComment: Comment = {
+      id: 'temp-' + Date.now(),
+      content: commentContent,
+      createdAt: new Date().toISOString(),
+      likes: 0,
+      user: { 
+        id: currentUserId || 'unknown',
+        displayName: 'You',
+        email: ''
+      },
+      userLiked: false,
+      replies: [],
+      mentions: [],
+      revealRequested: false,
+      revealApproved: false
+    };
+    
+    // Update UI optimistically
+    setComments(prevComments => [optimisticComment, ...prevComments]);
 
     try {
       const response = await fetch('/api/comments', {
@@ -93,19 +145,35 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
         },
         body: JSON.stringify({
           confessionId,
-          content: newComment,
+          content: commentContent,
         }),
       });
 
       if (!response.ok) {
         throw new Error('Failed to post comment');
       }
-
-      setNewComment('');
-      await fetchComments(); // Refresh comments
+      
+      // Get the actual comment from the response
+      const data = await response.json();
+      if (data.comment) {
+        // Replace temporary comment with the real one
+        setComments(prevComments => 
+          prevComments.map(c => c.id === optimisticComment.id ? data.comment : c)
+        );
+      } else {
+        // Fallback to fetching all comments if we didn't get the created comment
+        fetchComments(true);
+      }
     } catch (error) {
       console.error('Error posting comment:', error);
       setError('Failed to post comment');
+      
+      // Remove the optimistic comment
+      setComments(prevComments => 
+        prevComments.filter(c => c.id !== optimisticComment.id)
+      );
+      // Restore the comment text
+      setNewComment(commentContent);
     } finally {
       setIsLoading(false);
     }
@@ -118,6 +186,42 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
 
     setIsLoading(true);
     setError(null);
+    
+    // Clear the reply input immediately for better UX
+    setNewReply({ ...newReply, [commentId]: '' });
+    setReplyingTo(null);
+    
+    // Create temporary optimistic reply
+    const parentComment = comments.find(c => c.id === commentId);
+    if (!parentComment) {
+      setError('Comment not found');
+      setIsLoading(false);
+      return;
+    }
+    
+    const optimisticReply: Reply = {
+      id: 'temp-reply-' + Date.now(),
+      content: replyContent,
+      createdAt: new Date().toISOString(),
+      likes: 0,
+      user: { 
+        id: currentUserId || 'unknown',
+        displayName: 'You',
+        email: ''
+      },
+      userLiked: false,
+      mentions: [],
+      revealRequested: false,
+      revealApproved: false
+    };
+    
+    // Add optimistic reply to the parent comment
+    setComments(prevComments => 
+      prevComments.map(c => c.id === commentId 
+        ? { ...c, replies: [...c.replies, optimisticReply] }
+        : c
+      )
+    );
 
     try {
       const response = await fetch('/api/comments', {
@@ -135,21 +239,100 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
       if (!response.ok) {
         throw new Error('Failed to post reply');
       }
-
-      // Clear the reply input and hide the reply form
-      setNewReply({ ...newReply, [commentId]: '' });
-      setReplyingTo(null);
-      await fetchComments(); // Refresh comments
+      
+      // Get the actual reply from the response
+      const data = await response.json();
+      if (data.comment) {
+        // Update the comment with the real reply
+        setComments(prevComments => 
+          prevComments.map(c => {
+            if (c.id === commentId) {
+              // Remove optimistic reply and add the real one
+              const updatedReplies = c.replies.filter(r => r.id !== optimisticReply.id);
+              return { 
+                ...c, 
+                replies: [...updatedReplies, data.comment] 
+              };
+            }
+            return c;
+          })
+        );
+      } else {
+        // Fallback to fetching all comments if we didn't get the created reply
+        fetchComments(true);
+      }
     } catch (error) {
       console.error('Error posting reply:', error);
       setError('Failed to post reply');
+      
+      // Remove the optimistic reply
+      setComments(prevComments => 
+        prevComments.map(c => c.id === commentId 
+          ? { ...c, replies: c.replies.filter(r => r.id !== optimisticReply.id) }
+          : c
+        )
+      );
+      // Restore the reply text and show the form again
+      setNewReply({ ...newReply, [commentId]: replyContent });
+      setReplyingTo(commentId);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Function to like/unlike a comment
+  // Function to like/unlike a comment with optimistic UI update
   const handleLikeComment = async (commentId: string) => {
+    // Find if it's a top-level comment or a reply
+    let isReply = false;
+    let parentCommentId = '';
+    
+    // Check if it's a reply
+    for (const comment of comments) {
+      const reply = comment.replies.find(r => r.id === commentId);
+      if (reply) {
+        isReply = true;
+        parentCommentId = comment.id;
+        break;
+      }
+    }
+    
+    // Optimistic UI update
+    setComments(prevComments => {
+      if (isReply) {
+        // It's a reply
+        return prevComments.map(c => {
+          if (c.id === parentCommentId) {
+            return {
+              ...c,
+              replies: c.replies.map(r => {
+                if (r.id === commentId) {
+                  return {
+                    ...r,
+                    userLiked: !r.userLiked,
+                    likes: r.userLiked ? r.likes - 1 : r.likes + 1
+                  };
+                }
+                return r;
+              })
+            };
+          }
+          return c;
+        });
+      } else {
+        // It's a top-level comment
+        return prevComments.map(c => {
+          if (c.id === commentId) {
+            return {
+              ...c,
+              userLiked: !c.userLiked,
+              likes: c.userLiked ? c.likes - 1 : c.likes + 1
+            };
+          }
+          return c;
+        });
+      }
+    });
+
     try {
       const response = await fetch(`/api/comments/${commentId}/like`, {
         method: 'POST',
@@ -158,16 +341,68 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
       if (!response.ok) {
         throw new Error('Failed to like/unlike comment');
       }
-
-      await fetchComments(); // Refresh comments
+      
+      // No need to refresh all comments - our optimistic update is sufficient
     } catch (error) {
       console.error('Error liking comment:', error);
       setError('Failed to like/unlike comment');
+      
+      // Revert the optimistic update if the API call fails
+      fetchComments(true);
     }
   };
 
   // Function to handle reveal identity request
   const handleRevealRequest = async (commentId: string) => {
+    // Find if it's a top-level comment or a reply
+    let isReply = false;
+    let parentCommentId = '';
+    
+    // Check if it's a reply
+    for (const comment of comments) {
+      const reply = comment.replies.find(r => r.id === commentId);
+      if (reply) {
+        isReply = true;
+        parentCommentId = comment.id;
+        break;
+      }
+    }
+    
+    // Optimistic UI update
+    setComments(prevComments => {
+      if (isReply) {
+        // It's a reply
+        return prevComments.map(c => {
+          if (c.id === parentCommentId) {
+            return {
+              ...c,
+              replies: c.replies.map(r => {
+                if (r.id === commentId) {
+                  return {
+                    ...r,
+                    revealRequested: true
+                  };
+                }
+                return r;
+              })
+            };
+          }
+          return c;
+        });
+      } else {
+        // It's a top-level comment
+        return prevComments.map(c => {
+          if (c.id === commentId) {
+            return {
+              ...c,
+              revealRequested: true
+            };
+          }
+          return c;
+        });
+      }
+    });
+
     try {
       const response = await fetch(`/api/comments/${commentId}/reveal`, {
         method: 'POST',
@@ -180,16 +415,22 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
       if (!response.ok) {
         throw new Error('Failed to request identity reveal');
       }
-
-      await fetchComments(); // Refresh comments
+      
+      // No need to refresh all comments
     } catch (error) {
       console.error('Error requesting identity reveal:', error);
       setError('Failed to request identity reveal');
+      
+      // Revert the optimistic update
+      fetchComments(true);
     }
   };
 
   // Function to approve a reveal request
   const handleApproveReveal = async (commentId: string) => {
+    // No optimistic update here since we want to wait for the server's response
+    // about conversation creation
+    
     try {
       const response = await fetch(`/api/comments/${commentId}/reveal`, {
         method: 'POST',
@@ -205,6 +446,36 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
 
       const result = await response.json();
       
+      // Update the comment's reveal status
+      setComments(prevComments => {
+        // Check if it's a reply by searching through all comments
+        for (const comment of prevComments) {
+          const replyIndex = comment.replies.findIndex(r => r.id === commentId);
+          if (replyIndex >= 0) {
+            // It's a reply
+            return prevComments.map(c => {
+              if (c.id === comment.id) {
+                const updatedReplies = [...c.replies];
+                updatedReplies[replyIndex] = {
+                  ...updatedReplies[replyIndex],
+                  revealApproved: true
+                };
+                return { ...c, replies: updatedReplies };
+              }
+              return c;
+            });
+          }
+        }
+        
+        // It's a top-level comment
+        return prevComments.map(c => {
+          if (c.id === commentId) {
+            return { ...c, revealApproved: true };
+          }
+          return c;
+        });
+      });
+      
       // If a conversation was created or exists, show proper notification
       if (result.conversationId) {
         if (result.conversationAlreadyExists) {
@@ -217,8 +488,6 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
           }
         }
       }
-
-      await fetchComments(); // Refresh comments
     } catch (error) {
       console.error('Error approving identity reveal:', error);
       setError('Failed to approve identity reveal');
@@ -276,6 +545,15 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
       {error && (
         <div className="p-2 text-sm text-red-500 bg-red-50 rounded-md">
           {error}
+          <button 
+            className="ml-2 underline"
+            onClick={() => {
+              setError(null);
+              fetchComments(true);
+            }}
+          >
+            Refresh
+          </button>
         </div>
       )}
       
@@ -432,4 +710,4 @@ export default function CommentSection({ confessionId, isConfessionOwner = false
       </div>
     </div>
   );
-} 
+}

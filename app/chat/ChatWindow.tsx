@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from 'next/navigation';
 import Loader from "../../components/ui/Loader";
 
@@ -24,12 +24,126 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
   const router = useRouter();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // References to store intervals
+  const messagesPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const typingPollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track if component is mounted
+  const isMountedRef = useRef(true);
+
+  // Track user activity to reduce unnecessary polling
+  const [isUserActive, setIsUserActive] = useState(true);
+  const lastActivityRef = useRef(Date.now());
+  const INACTIVE_THRESHOLD = 60000; // 1 minute of inactivity
+  const ACTIVE_POLL_INTERVAL = 5000; // 5 seconds when active (increased from 3s)
+  const INACTIVE_POLL_INTERVAL = 30000; // 30 seconds when inactive
+
+  // Reset the user activity timer on user interactions
+  const resetActivityTimer = useCallback(() => {
+    lastActivityRef.current = Date.now();
+    if (!isUserActive) {
+      setIsUserActive(true);
+      startPolling(); // Restart more frequent polling
+    }
+  }, [isUserActive]);
+
+  // Function to check user activity status
+  const checkUserActivity = useCallback(() => {
+    const now = Date.now();
+    if (now - lastActivityRef.current > INACTIVE_THRESHOLD) {
+      setIsUserActive(false);
+      startPolling(); // Restart with less frequent polling
+    }
+  }, []);
+
+  // Setup activity monitoring
+  useEffect(() => {
+    // Monitor user activity
+    const activityEvents = ["mousedown", "keydown", "touchstart", "scroll"];
+    const activityHandler = () => resetActivityTimer();
+
+    activityEvents.forEach((event) => {
+      window.addEventListener(event, activityHandler);
+    });
+
+    // Check activity status every minute
+    const activityInterval = setInterval(checkUserActivity, INACTIVE_THRESHOLD);
+
+    return () => {
+      activityEvents.forEach((event) => {
+        window.removeEventListener(event, activityHandler);
+      });
+      clearInterval(activityInterval);
+    };
+  }, [resetActivityTimer, checkUserActivity]);
+
+  // Clean up function to clear all intervals
+  const clearAllIntervals = useCallback(() => {
+    if (messagesPollIntervalRef.current) {
+      clearInterval(messagesPollIntervalRef.current);
+      messagesPollIntervalRef.current = null;
+    }
+
+    if (typingPollIntervalRef.current) {
+      clearInterval(typingPollIntervalRef.current);
+      typingPollIntervalRef.current = null;
+    }
+  }, []);
+
+  // Start polling with appropriate intervals based on user activity
+  const startPolling = useCallback(() => {
+    // Clear existing intervals first
+    clearAllIntervals();
+
+    if (!conversationId || !isMountedRef.current) return;
+
+    // Set appropriate intervals based on user activity
+    const messageInterval = isUserActive
+      ? ACTIVE_POLL_INTERVAL
+      : INACTIVE_POLL_INTERVAL;
+    const typingInterval = isUserActive ? 3000 : null; // Only check typing when user is active
+
+    // Setup message polling
+    messagesPollIntervalRef.current = setInterval(() => {
+      if (isMountedRef.current) {
+        fetchMessages(false); // silent update
+      }
+    }, messageInterval);
+
+    // Setup typing status polling only when user is active
+    if (isUserActive && typingInterval) {
+      typingPollIntervalRef.current = setInterval(() => {
+        if (isMountedRef.current) {
+          checkTypingStatus();
+        }
+      }, typingInterval);
+    }
+  }, [isUserActive, conversationId]);
+
   // Fetch conversation details and check block status
   useEffect(() => {
     if (conversationId) {
       fetchConversationDetails();
+
+      // Start polling
+      startPolling();
     }
-  }, [conversationId]);
+
+    // Cleanup on unmount or when conversation changes
+    return () => {
+      isMountedRef.current = false;
+      clearAllIntervals();
+    };
+  }, [conversationId, clearAllIntervals, startPolling]);
+
+  // Update polling whenever user activity state changes
+  useEffect(() => {
+    if (conversationId) {
+      startPolling();
+    }
+
+    return () => clearAllIntervals();
+  }, [isUserActive, conversationId, startPolling, clearAllIntervals]);
 
   // Function to fetch conversation details
   const fetchConversationDetails = async () => {
@@ -63,28 +177,6 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
     }
   };
 
-  // Fetch messages when the component mounts or the conversation changes
-  useEffect(() => {
-    if (conversationId) {
-      fetchMessages();
-
-      // Set up polling for real-time updates
-      const messagesPollInterval = setInterval(() => {
-        fetchMessages(false); // silent update
-      }, 3000); // Poll every 3 seconds
-
-      // Set up polling for typing status
-      const typingPollInterval = setInterval(() => {
-        checkTypingStatus();
-      }, 1000); // Poll every second
-
-      return () => {
-        clearInterval(messagesPollInterval);
-        clearInterval(typingPollInterval);
-      };
-    }
-  }, [conversationId]);
-
   // Scroll to bottom when messages change
   useEffect(() => {
     scrollToBottom();
@@ -108,7 +200,11 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
       }
 
       const data = await response.json();
-      setMessages(data.messages || []);
+
+      // Only update state if messages have changed
+      if (JSON.stringify(data.messages) !== JSON.stringify(messages)) {
+        setMessages(data.messages || []);
+      }
     } catch (err: any) {
       if (showLoading) {
         setError(err.message || "An error occurred while fetching messages");
@@ -121,6 +217,8 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
 
   // Function to check typing status
   const checkTypingStatus = async () => {
+    if (!isUserActive) return; // Skip if user is inactive
+
     try {
       const response = await fetch(
         `/api/conversations/${conversationId}/typing`
@@ -141,25 +239,34 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
     }
   };
 
-  // Function to handle typing indicator
-  const handleTyping = () => {
-    // Send typing status to server
-    fetch(`/api/conversations/${conversationId}/typing`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-    }).catch((err) => console.error("Error sending typing status:", err));
+  // Use a debounced function to handle typing indicator
+  const handleTyping = useCallback(() => {
+    // Reset activity timer since user is typing
+    resetActivityTimer();
 
     // Clear existing timeout
     if (typingTimeout) clearTimeout(typingTimeout);
-  };
+
+    // Set a new timeout to send the typing status
+    const timeoutId = setTimeout(() => {
+      // Send typing status to server
+      fetch(`/api/conversations/${conversationId}/typing`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      }).catch((err) => console.error("Error sending typing status:", err));
+    }, 500); // Debounce typing for 500ms
+
+    setTypingTimeout(timeoutId);
+  }, [conversationId, typingTimeout, resetActivityTimer]);
 
   // Function to send a message
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || isSending) return;
 
+    resetActivityTimer(); // Reset activity timer when sending a message
     setIsSending(true);
     try {
       const response = await fetch(
@@ -177,9 +284,18 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
         throw new Error("Failed to send message");
       }
 
-      // Clear input and refresh messages
+      const result = await response.json();
+
+      // Add the new message directly to the messages array instead of refetching
+      if (result.sentMessage) {
+        setMessages((prevMessages) => [...prevMessages, result.sentMessage]);
+      } else {
+        // Fallback to fetching if we didn't get the sent message in the response
+        fetchMessages(false);
+      }
+
+      // Clear input
       setNewMessage("");
-      fetchMessages();
     } catch (err: any) {
       setError(err.message || "An error occurred while sending your message");
       console.error(err);
@@ -300,6 +416,7 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
     groupedMessages[date].push(message);
   });
 
+  // Rest of the component remains the same
   return (
     <div className="flex flex-col h-full">
       <div className="p-4 border-b border-gray-200 flex justify-between items-center">
@@ -359,7 +476,11 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 bg-gray-50">
+      {/* Rest of the JSX remains unchanged */}
+      <div
+        className="flex-1 overflow-y-auto p-4 bg-gray-50"
+        onClick={resetActivityTimer}
+      >
         {isBlocked && (
           <div className="bg-red-100 text-red-800 p-3 mb-4 rounded-md">
             You have blocked this user. You can no longer send or receive
@@ -395,12 +516,14 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
                 <div
                   key={message.id}
                   className={`flex mb-3 ${
-                    message.isCurrentUser ? "justify-end" : "justify-start"
+                    message.senderId === currentUserId
+                      ? "justify-end"
+                      : "justify-start"
                   }`}
                 >
                   <div
                     className={`max-w-3/4 p-3 rounded-lg ${
-                      message.isCurrentUser
+                      message.senderId === currentUserId
                         ? "bg-purple-600 text-white rounded-br-none"
                         : "bg-white shadow rounded-bl-none"
                     }`}
@@ -408,7 +531,7 @@ export default function ChatWindow({ conversationId, currentUserId }: { conversa
                     <p className="mb-1">{message.content}</p>
                     <p
                       className={`text-xs ${
-                        message.isCurrentUser
+                        message.senderId === currentUserId
                           ? "text-purple-200"
                           : "text-gray-500"
                       }`}
